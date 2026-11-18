@@ -1,4 +1,8 @@
-"""洞察报告 分析看板接口：汇总指标、参数运行与结果导出。"""
+"""洞察报告 分析看板接口：汇总指标、参数运行与结果导出。
+
+V016：新增报告版本发布（与导出批次同事务联动）与按报告编号核对导出文件
+内结论版本的跨模块接口。
+"""
 from __future__ import annotations
 
 import csv
@@ -11,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.insight_report import InsightReportService
+from app.services.export_manifest import ExportManifestError
 
 router = APIRouter(prefix="/api/insight_report", tags=["洞察报告"])
 service = InsightReportService()
@@ -59,6 +64,30 @@ def export_entries() -> StreamingResponse:
     buf.seek(0)
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": "attachment; filename=insight_report.csv"})
+
+
+@router.get("/v016/cross-check")
+def cross_check_manifests(report_no: str = Query(...)) -> dict[str, Any]:
+    """V016 跨模块联动：读取导出文件清单中的报告编号，核对文件里的结论版本。"""
+    try:
+        return service.cross_check_export_manifest(report_no)
+    except ExportManifestError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{entry_id}/versions")
+def publish_version(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """发布报告新版本：与导出批次在同一事务内完成版本冲突处置。"""
+    new_version = str(payload.values.get("报告版本") or payload.values.get("新版本") or "").strip()
+    try:
+        result = service.publish_new_version(entry_id, new_version, payload.remark)
+    except ExportManifestError as exc:
+        return ActionResult(ok=False, message=str(exc))
+    return ActionResult(
+        ok=True,
+        message=f"报告新版本 {new_version} 已发布，已联动 {result['联动批次数']} 个导出批次",
+        entry=result,
+    )
 
 
 @router.get("/{entry_id}")

@@ -75,5 +75,36 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## V016 数据导出：导出文件清单
+
+数据导出原先只有任务状态，V016 新增「导出文件清单」域，读取导出任务
+（`data_export`）与洞察结论（`insight_report`）两张数据表，按字段清单整理出
+可交接的导出文件，文件内容可回查报告版本与导出批次。
+
+新增数据表（`app/seed.py`，内存仓库，事务见 `app/store.py` 的 `transaction()`）：
+
+| 表 | 用途 |
+| --- | --- |
+| `export_manifest` | 导出文件清单头：任务编号、导出批次、报告编号、报告版本、版本捕获方式、后续新版本、留档批次号 |
+| `export_file` | 清单内文件记录：字段清单、内容指纹、下载路径、书签登记、结论快照 |
+| `export_checkpoint` | 片段检查点：中断后只续写缺失片段，已写片段幂等不重写 |
+| `export_residual` | 残留记录：出现残留时按文件清单核对并在事务中整体回滚 |
+| `export_audit` | V016 留档核对记录（`V016-ARC-xxxx`） |
+| `export_handoff` | 交接记录：V016 核对无误后转交接收方的导出文件清单 |
+
+关键约束（实现于 `app/services/export_manifest.py`）：
+
+- 文件内容与导出批次在同一事务提交；任何一步失败整体回滚，不会出现没有版本说明的旧包。
+- 文件按固定规则渲染并记录 SHA-256 指纹，重复导出不会生成内容不同的同名文件；
+  新批次用批次号隔离文件名，上一份完整文件始终可下载。
+- 版本冲突两种策略：最新版本（导出中可刷新为当前最新报告版本与生成时间）、
+  冻结版本（保留任务冻结时捕获的版本，只列出后续新版本，文件结论快照不可变）。
+- 报告发布新版本走 `POST /api/insight_report/{id}/versions`，与导出批次在同一事务联动；
+  洞察报告侧用 `GET /api/insight_report/v016/cross-check?report_no=` 按报告编号
+  核对各批次文件里的结论版本（数据导出侧等价入口
+  `GET /api/data_export/reports/{report_no}/cross-check`）。
+- 前端导航页表格与详情抽屉共用 `views/data_export/useExportManifests.ts`
+  的同一份业务数据；洞察报告页提供版本发布与跨模块核对面板。
+
 领域：数据工程
 子方向：数据分析与数据应用
